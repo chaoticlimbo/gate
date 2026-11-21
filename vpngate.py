@@ -56,7 +56,7 @@ DEFAULT_OPTIMAL_API = ""
 # 远程优选域名池：每次运行时拉取最新名单（LancelotRar/best-cf-domains），
 # 拉取失败或为空时回退到下面的静态池。可用 EDGE_HOSTS_URL 覆盖，设为空字符串禁用。
 DEFAULT_EDGE_HOSTS_URL = (
-    "https://raw.githubusercontent.com/LancelotRar/best-cf-domains/main/best-cf-domain.txt"
+    "https://cf.090227.xyz/ct?ips=6"
 )
 
 # 占位符检测：命中任意一个就认为用户还没配置
