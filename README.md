@@ -24,7 +24,7 @@ GitHub Actions (手动或 cron)
         ├─ 解析 OpenVPN 配置 → 只保留 proto tcp → 得到 SSTP 候选
         ├─ 去重 + 按 Ping 预排序 +（可选）截断
         ├─ 并发请求 Cloudflare Worker: /check?sstp=vpn:vpn@host:port
-        ├─ 合并静态优选域名 + 优选 API 端点
+        ├─ 拉取远程优选域名池（best-cf-domains，失败回退静态池）+ 优选 API 端点
         └─ 生成 public/{data.json,index.html,nodes.txt}
                     │
                     └─ GitHub Pages → nodes.txt 作为 edgetunnel 的「自定义优选 IP」
@@ -72,9 +72,10 @@ on:
 | `CHECK_DEADLINE` | `1200` | 整轮检测的总截止时间（秒），超时未完成的节点按失败处理 |
 | `MAX_CHECK_NODES` | `0` | 最多检测多少个节点，`0` 表示全部；按 Ping 从低到高取 |
 | `MIN_SUCCESS_RATIO` | `0` | 成功率低于该比例时拒绝发布（0–1），`0` 表示不启用 |
-| `MAX_RESIDENTIAL_PER_COUNTRY` | `20` | 每个国家/地区写入 nodes.txt 的住宅节点上限 |
-| `MAX_DATACENTER_PER_COUNTRY` | `10` | 每个国家/地区写入 nodes.txt 的机房节点上限 |
-| `EDGE_HOSTS` / `HOSTS_ENTRY` | 内置池 | 自定义优选域名池，逗号分隔，可带端口，如 `a.com:443,b.com:8443` |
+| `MAX_RESIDENTIAL_PER_COUNTRY` | `0` | 每个国家/地区写入 nodes.txt 的住宅节点上限，`0` 表示不限量（检测通过的全部发布） |
+| `MAX_DATACENTER_PER_COUNTRY` | `0` | 每个国家/地区写入 nodes.txt 的机房节点上限，`0` 表示不限量（检测通过的全部发布） |
+| `EDGE_HOSTS_URL` | best-cf-domains 名单 | 远程优选域名池地址，每次运行时拉取最新名单作入口池；拉取失败回退 `EDGE_HOSTS` 静态池。设为空字符串可禁用 |
+| `EDGE_HOSTS` / `HOSTS_ENTRY` | 内置池 | 静态优选域名池（远程池拉取失败时回退用），逗号分隔，可带端口，如 `a.com:443,b.com:8443` |
 | `OPTIMAL_API` | `https://cf.090227.xyz/ct?ips=6&port=443` | 优选 API；返回每行一个 `IP:端口` 或 IPv6，支持逗号分隔多个 |
 | `PUBLIC_DIR` | `./public` | 产物目录 |
 | `VPNGATE_API` / `VPNGATE_MIRROR` | 官方 API / 内置镜像 | 数据源，一般不用改 |

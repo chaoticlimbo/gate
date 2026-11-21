@@ -6,7 +6,7 @@
   2. 只保留带 TCP 入口的 SSTP 节点（VPN Gate 的 TCP 端口即 SSTP 端口）
   3. 去重 → 按 Ping 预排序 →（可选）截断
   4. 并发调用检测 Worker
-  5. 合并静态优选域名与优选 API 端点
+  5. 拉取远程优选域名池（失败回退静态池），合并优选 API 端点
   6. 生成 public/data.json + public/index.html + public/nodes.txt
 
 配置全部来自环境变量。模板仓库约定：用户只需在仓库里配置 Secret `DOMAIN`，
@@ -52,6 +52,12 @@ DEFAULT_VPNGATE_MIRROR = (
     "https://raw.githubusercontent.com/fdciabdul/Vpngate-Scraper-API/main/json/data.json"
 )
 DEFAULT_OPTIMAL_API = ""
+
+# 远程优选域名池：每次运行时拉取最新名单（LancelotRar/best-cf-domains），
+# 拉取失败或为空时回退到下面的静态池。可用 EDGE_HOSTS_URL 覆盖，设为空字符串禁用。
+DEFAULT_EDGE_HOSTS_URL = (
+    "https://raw.githubusercontent.com/LancelotRar/best-cf-domains/main/best-cf-domain.txt"
+)
 
 # 占位符检测：命中任意一个就认为用户还没配置
 PLACEHOLDER_MARKERS = ("你的", "YOUR_", "YOUR-", "example.com", "yourdomain")
@@ -300,6 +306,7 @@ class Config:
     public_dir: str
     template_html: str
     edge_hosts: tuple[str, ...]
+    edge_hosts_url: str
     optimal_api: str
     nodes_url: str
     min_success_ratio: float
@@ -334,11 +341,12 @@ class Config:
             public_dir=os.environ.get("PUBLIC_DIR", os.path.join(REPO_DIR, "public")),
             template_html=os.path.join(REPO_DIR, "web", "index.html"),
             edge_hosts=tuple(edge_hosts),
+            edge_hosts_url=os.environ.get("EDGE_HOSTS_URL", DEFAULT_EDGE_HOSTS_URL).strip(),
             optimal_api=os.environ.get("OPTIMAL_API", DEFAULT_OPTIMAL_API),
             nodes_url=derive_nodes_url(),
             min_success_ratio=_env_float("MIN_SUCCESS_RATIO", 0.0, minimum=0.0),
-            max_residential_per_country=_env_int("MAX_RESIDENTIAL_PER_COUNTRY", 20),
-            max_datacenter_per_country=_env_int("MAX_DATACENTER_PER_COUNTRY", 10),
+            max_residential_per_country=_env_int("MAX_RESIDENTIAL_PER_COUNTRY", 0),
+            max_datacenter_per_country=_env_int("MAX_DATACENTER_PER_COUNTRY", 0),
         )
 
 
@@ -762,19 +770,51 @@ def fetch_optimal_endpoints(cfg: Config, session: requests.Session) -> list[str]
     return endpoints
 
 
+def fetch_edge_hosts(cfg: Config, session: requests.Session) -> list[str]:
+    """运行时拉取远程优选域名池，保证每次运行都用最新名单。
+
+    名单一行为一个 `host:port`，可带 `#备注`（归一化时忽略），空行跳过。
+    拉取失败或名单为空时返回空列表，由调用方回退静态池，不让运行失败。
+    """
+    url = (cfg.edge_hosts_url or "").strip()
+    if not url:
+        return []
+    try:
+        log("EDGE POOL", f"拉取远程优选域名池: {url}")
+        response = session.get(url, timeout=min(cfg.http_timeout, 15))
+        if response.status_code != 200:
+            log("EDGE POOL", f"远程域名池返回状态码异常: {response.status_code}")
+            return []
+        endpoints: list[str] = []
+        seen: set[str] = set()
+        for line in response.text.splitlines():
+            endpoint = normalize_endpoint(line)
+            if endpoint and endpoint not in seen:
+                seen.add(endpoint)
+                endpoints.append(endpoint)
+        log("EDGE POOL", f"远程优选域名池获取到 {len(endpoints)} 个域名")
+        return endpoints
+    except Exception as exc:  # noqa: BLE001
+        log("EDGE POOL", f"拉取远程优选域名池失败 ({url}): {exc}")
+        return []
+
+
 def get_combined_edge_hosts(cfg: Config, session: requests.Session) -> list[str]:
+    remote_hosts = fetch_edge_hosts(cfg, session)
+    base_hosts = remote_hosts if remote_hosts else list(cfg.edge_hosts)
     api_endpoints = fetch_optimal_endpoints(cfg, session)
     combined: list[str] = []
     seen: set[str] = set()
-    for endpoint in list(cfg.edge_hosts) + api_endpoints:
+    for endpoint in base_hosts + api_endpoints:
         if endpoint and endpoint not in seen:
             seen.add(endpoint)
             combined.append(endpoint)
     if not combined:  # 双保险：静态池在 Config 里已兜底，这里再兜一次
         combined = [h for h in (normalize_endpoint(x) for x in DEFAULT_EDGE_HOSTS) if h]
+    source = "远程" if remote_hosts else "静态/配置"
     log(
         "EDGE POOL",
-        f"入口地址池: 静态/配置 {len(cfg.edge_hosts)} 个, API {len(api_endpoints)} 个, 合并 {len(combined)} 个",
+        f"入口地址池: {source} {len(base_hosts)} 个, API {len(api_endpoints)} 个, 合并 {len(combined)} 个",
     )
     return combined
 
@@ -859,7 +899,16 @@ def build_nodes_text(data: dict[str, Any], edge_hosts: list[str], cfg: Config) -
         )
         residential = [n for n in nodes if n.get("residential") == "residential"]
         others = [n for n in nodes if n.get("residential") != "residential"]
-        chosen = residential[: cfg.max_residential_per_country] + others[: cfg.max_datacenter_per_country]
+        # 上限为 0 表示不限量：检测通过的节点全部发布（默认行为）
+        chosen = (
+            residential[: cfg.max_residential_per_country]
+            if cfg.max_residential_per_country > 0
+            else residential
+        ) + (
+            others[: cfg.max_datacenter_per_country]
+            if cfg.max_datacenter_per_country > 0
+            else others
+        )
         counters = {"residential": 0, "datacenter": 0, "unknown": 0}
         for node in chosen:
             link = f"sstp://vpn:vpn@{node['host']}:{node['port']}"
