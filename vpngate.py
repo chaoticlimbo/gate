@@ -6,7 +6,7 @@
   2. 只保留带 TCP 入口的 SSTP 节点（VPN Gate 的 TCP 端口即 SSTP 端口）
   3. 去重 → 按 Ping 预排序 →（可选）截断
   4. 并发调用检测 Worker
-  5. 拉取远程优选域名池（失败回退静态池），合并优选 API 端点
+  5. 合并静态优选域名池与优选 API 端点
   6. 生成 public/data.json + public/index.html + public/nodes.txt
 
 配置全部来自环境变量。模板仓库约定：用户只需在仓库里配置 Secret `DOMAIN`，
@@ -53,47 +53,20 @@ DEFAULT_VPNGATE_MIRROR = (
 )
 DEFAULT_OPTIMAL_API = ""
 
-# 远程优选域名池：每次运行时拉取最新名单（LancelotRar/best-cf-domains），
-# 拉取失败或为空时回退到下面的静态池。可用 EDGE_HOSTS_URL 覆盖，设为空字符串禁用。
-DEFAULT_EDGE_HOSTS_URL = (
-    "https://cf.090227.xyz/ct?ips=6"
-)
+# 远程优选域名池默认不启用：入口池以写死的静态池为准。
+# 如需改用远程名单，可通过 EDGE_HOSTS_URL 指定地址（拉取失败时回退静态池）。
+DEFAULT_EDGE_HOSTS_URL = ""
 
 # 占位符检测：命中任意一个就认为用户还没配置
 PLACEHOLDER_MARKERS = ("你的", "YOUR_", "YOUR-", "example.com", "yourdomain")
 
-# 静态优选域名池（可用 EDGE_HOSTS 整体覆盖）
+# 静态优选域名池（写死；可用 EDGE_HOSTS 整体覆盖）
 DEFAULT_EDGE_HOSTS = [
-    "www.sage.com:443#SG",
-    "www.dentoncounty.gov:443#SG",
-    "www.broadcom.com:443#SG",
-    "funko.com:443#SG",
-    "login.rockwellautomation.com:443#SG",
-    "www.wto.org:443#SG",
-    "www.deepl.com:443#SG",
-    "kickstarter.com:443#SG",
-    "staticdelivery.nexusmods.com:443#SG",
-    "www.gov.il:443#SG",
-    "store.ubi.com:443#SG",
-    "www.mastervolt.com:443#SG",
-    "www.crazygames.fr:443#SG",
-    "mfa.gov.ua:443#SG",
-    "www.zendesk.com:443#SG",
-    "stores.staples.com:443#SG",
-    "www.dbs.com.sg:443#SG",
-    "www.vmware.com:443#SG",
-    "www.leics.police.uk:443#SG",
-    "www.blibli.com:443#SG",
-    "www.sofi.com:443#SG",
-    "jobsdb.com:443#SG",
-    "www.jp.pima.gov:443#SG",
-    "coreweave.com:443#SG",
-    "academy.7shifts.com:443#SG",
-    "markmonitor.com:443#SG",
-    "www.bis.gov:443#SG",
-    "constitution.congress.gov:443#SG",
-    "www.giannidelprete.it:443#SG",
-    "tt.78607323.xyz:443#JP",
+    "www.5199dy.com:2053",
+    "tt.78607323.xyz:8443",
+    "224322.xyz:2083",
+    "saas.072159.xyz:2083",
+    "cf.vvhan.com:2053",
 ]
 
 DATA_CENTER_ORG_KEYWORDS = [
