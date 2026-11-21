@@ -54,16 +54,23 @@ DEFAULT_VPNGATE_MIRROR = (
 DEFAULT_OPTIMAL_API = ""
 
 # 优选域名池存放在 GitHub Gist 里：改域名只需在 Gist 页面里改，不用动仓库和脚本。
-# 每次运行时拉取最新内容，拉取失败时回退到下面的静态池（内容与 Gist 保持一致）。
+# 每次运行时拉取最新内容；拉取失败或内容为空时，改拉下面的优选 IP 池（best-cf-ips top20），
+# 两者都不可用时再回退到静态池，确保入口池始终有地址可用。
 # 可用 EDGE_HOSTS_URL 覆盖，设为空字符串禁用。
 DEFAULT_EDGE_HOSTS_URL = (
     "https://gist.githubusercontent.com/chaoticlimbo/55bcc13885414287cbbbed2a97fc5756/raw/domain.txt"
 )
 
+# 第二数据源：LancelotRar/best-cf-ips 的优选 IP 前 20（每行 `IP:443#地区`，解析方式与域名池相同）。
+# 仅当上面的域名池拉不到任何地址时启用。可用 EDGE_IPS_URL 覆盖，设为空字符串禁用。
+DEFAULT_EDGE_IPS_URL = (
+    "https://raw.githubusercontent.com/LancelotRar/best-cf-ips/main/best-cf-ip-scanned-top20.txt"
+)
+
 # 占位符检测：命中任意一个就认为用户还没配置
 PLACEHOLDER_MARKERS = ("你的", "YOUR_", "YOUR-", "example.com", "yourdomain")
 
-# 静态优选域名池（Gist 拉取失败时的回退，内容与 Gist 一致；可用 EDGE_HOSTS 整体覆盖）
+# 静态优选域名池（Gist 与优选 IP 池都不可用时的最后回退；可用 EDGE_HOSTS 整体覆盖）
 DEFAULT_EDGE_HOSTS = [
     "tt.78607323.xyz:8443",
     "clickhouse.com:2096",
@@ -281,6 +288,7 @@ class Config:
     template_html: str
     edge_hosts: tuple[str, ...]
     edge_hosts_url: str
+    edge_ips_url: str
     optimal_api: str
     nodes_url: str
     min_success_ratio: float
@@ -316,6 +324,7 @@ class Config:
             template_html=os.path.join(REPO_DIR, "web", "index.html"),
             edge_hosts=tuple(edge_hosts),
             edge_hosts_url=os.environ.get("EDGE_HOSTS_URL", DEFAULT_EDGE_HOSTS_URL).strip(),
+            edge_ips_url=os.environ.get("EDGE_IPS_URL", DEFAULT_EDGE_IPS_URL).strip(),
             optimal_api=os.environ.get("OPTIMAL_API", DEFAULT_OPTIMAL_API),
             nodes_url=derive_nodes_url(),
             min_success_ratio=_env_float("MIN_SUCCESS_RATIO", 0.0, minimum=0.0),
@@ -744,20 +753,18 @@ def fetch_optimal_endpoints(cfg: Config, session: requests.Session) -> list[str]
     return endpoints
 
 
-def fetch_edge_hosts(cfg: Config, session: requests.Session) -> list[str]:
-    """运行时拉取远程优选域名池，保证每次运行都用最新名单。
+def _fetch_endpoint_list(
+    url: str, cfg: Config, session: requests.Session, label: str
+) -> list[str]:
+    """拉取一个远程名单并归一化：一行一个 `host:port`，可带 `#备注`（忽略），空行跳过。
 
-    名单一行为一个 `host:port`，可带 `#备注`（归一化时忽略），空行跳过。
-    拉取失败或名单为空时返回空列表，由调用方回退静态池，不让运行失败。
+    拉取失败或名单为空时返回空列表，由调用方决定回退，不让运行失败。
     """
-    url = (cfg.edge_hosts_url or "").strip()
-    if not url:
-        return []
     try:
-        log("EDGE POOL", f"拉取远程优选域名池: {url}")
+        log("EDGE POOL", f"拉取{label}: {url}")
         response = session.get(url, timeout=min(cfg.http_timeout, 15))
         if response.status_code != 200:
-            log("EDGE POOL", f"远程域名池返回状态码异常: {response.status_code}")
+            log("EDGE POOL", f"{label}返回状态码异常: {response.status_code}")
             return []
         endpoints: list[str] = []
         seen: set[str] = set()
@@ -766,15 +773,36 @@ def fetch_edge_hosts(cfg: Config, session: requests.Session) -> list[str]:
             if endpoint and endpoint not in seen:
                 seen.add(endpoint)
                 endpoints.append(endpoint)
-        log("EDGE POOL", f"远程优选域名池获取到 {len(endpoints)} 个域名")
+        log("EDGE POOL", f"{label}获取到 {len(endpoints)} 个地址")
         return endpoints
     except Exception as exc:  # noqa: BLE001
-        log("EDGE POOL", f"拉取远程优选域名池失败 ({url}): {exc}")
+        log("EDGE POOL", f"拉取{label}失败 ({url}): {exc}")
         return []
+
+
+def fetch_edge_hosts(cfg: Config, session: requests.Session) -> list[str]:
+    """运行时拉取 Gist 里的优选域名池，保证每次运行都用最新名单。"""
+    url = (cfg.edge_hosts_url or "").strip()
+    if not url:
+        return []
+    return _fetch_endpoint_list(url, cfg, session, "远程优选域名池")
+
+
+def fetch_edge_ips(cfg: Config, session: requests.Session) -> list[str]:
+    """域名池为空时的第二数据源：拉取 best-cf-ips 的优选 IP 前 20。"""
+    url = (cfg.edge_ips_url or "").strip()
+    if not url:
+        return []
+    return _fetch_endpoint_list(url, cfg, session, "优选 IP 池(best-cf-ips top20)")
 
 
 def get_combined_edge_hosts(cfg: Config, session: requests.Session) -> list[str]:
     remote_hosts = fetch_edge_hosts(cfg, session)
+    source = "远程域名池"
+    if not remote_hosts:
+        # 域名池拉取失败或为空：改用优选 IP 池兜底，确保入口池始终有地址可用
+        remote_hosts = fetch_edge_ips(cfg, session)
+        source = "优选IP池" if remote_hosts else "静态/配置"
     base_hosts = remote_hosts if remote_hosts else list(cfg.edge_hosts)
     api_endpoints = fetch_optimal_endpoints(cfg, session)
     combined: list[str] = []
@@ -785,7 +813,6 @@ def get_combined_edge_hosts(cfg: Config, session: requests.Session) -> list[str]
             combined.append(endpoint)
     if not combined:  # 双保险：静态池在 Config 里已兜底，这里再兜一次
         combined = [h for h in (normalize_endpoint(x) for x in DEFAULT_EDGE_HOSTS) if h]
-    source = "远程" if remote_hosts else "静态/配置"
     log(
         "EDGE POOL",
         f"入口地址池: {source} {len(base_hosts)} 个, API {len(api_endpoints)} 个, 合并 {len(combined)} 个",
