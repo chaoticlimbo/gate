@@ -96,6 +96,7 @@ def prepare_env(monkeypatch, base: str, public_dir, **extra):
     monkeypatch.setenv("PUBLIC_DIR", str(public_dir))
     monkeypatch.setenv("OPTIMAL_API", "")
     monkeypatch.setenv("EDGE_HOSTS_URL", "")
+    monkeypatch.setenv("EDGE_IPS_URL", "")
     monkeypatch.setenv("EDGE_HOSTS", "edge.example.com:443")
     monkeypatch.setenv("CHECK_CONCURRENCY", "2")
     monkeypatch.setenv("CHECK_TIMEOUT", "5")
