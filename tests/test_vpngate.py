@@ -23,6 +23,7 @@ def make_config(**overrides):
         public_dir="/tmp/public",
         template_html="/tmp/index.html",
         edge_hosts=("a.example.com:443", "b.example.com:443"),
+        edge_hosts_url="",
         optimal_api="",
         nodes_url="https://owner.github.io/repo/nodes.txt",
         min_success_ratio=0.0,
@@ -213,6 +214,55 @@ def test_classify_falls_back_to_org_keywords():
 
 
 # ---------------------------------------------------------------------------
+# 优选入口池
+# ---------------------------------------------------------------------------
+class _FakeResponse:
+    def __init__(self, text, status_code=200):
+        self.text = text
+        self.status_code = status_code
+
+
+class _FakeSession:
+    def __init__(self, text="", status_code=200, exc=None):
+        self._text = text
+        self._status_code = status_code
+        self._exc = exc
+
+    def get(self, url, timeout=None):
+        if self._exc is not None:
+            raise self._exc
+        return _FakeResponse(self._text, self._status_code)
+
+
+def test_fetch_edge_hosts_parses_remote_domain_list():
+    cfg = make_config(edge_hosts_url="https://example.invalid/best-cf-domain.txt")
+    session = _FakeSession(
+        "shopify.com:443#优选 | shopify.com\n"
+        "\n"
+        "cloudflare.dev:443#优选 | cloudflare.dev\n"
+        "shopify.com:443#优选 | shopify.com\n"
+        "bad host\n"
+    )
+    assert vpngate.fetch_edge_hosts(cfg, session) == ["shopify.com:443", "cloudflare.dev:443"]
+
+
+def test_fetch_edge_hosts_disabled_or_failed_returns_empty():
+    cfg = make_config(edge_hosts_url="")
+    assert vpngate.fetch_edge_hosts(cfg, _FakeSession("a.com:443")) == []
+    cfg = make_config(edge_hosts_url="https://example.invalid/list.txt")
+    assert vpngate.fetch_edge_hosts(cfg, _FakeSession(status_code=404)) == []
+    assert vpngate.fetch_edge_hosts(cfg, _FakeSession(exc=RuntimeError("boom"))) == []
+
+
+def test_get_combined_edge_hosts_prefers_remote_then_static():
+    cfg = make_config(edge_hosts_url="https://example.invalid/list.txt")
+    combined = vpngate.get_combined_edge_hosts(cfg, _FakeSession("remote.com:443#优选\n"))
+    assert combined == ["remote.com:443"]
+    combined = vpngate.get_combined_edge_hosts(cfg, _FakeSession(status_code=500))
+    assert combined == ["a.example.com:443", "b.example.com:443"]
+
+
+# ---------------------------------------------------------------------------
 # 产物
 # ---------------------------------------------------------------------------
 def sample_data():
@@ -242,6 +292,13 @@ def test_build_nodes_text_caps_and_formats():
     assert len(lines) == 2
     assert lines[0].startswith("a.example.com:443#日本-住宅-01$sstp://vpn:vpn@a.opengw.net:443")
     assert lines[1].startswith("a.example.com:443#日本-机房-01$sstp://vpn:vpn@c.opengw.net:443")
+
+
+def test_build_nodes_text_publishes_all_when_caps_zero():
+    cfg = make_config(max_residential_per_country=0, max_datacenter_per_country=0)
+    text = vpngate.build_nodes_text(sample_data(), ["a.example.com:443"], cfg)
+    lines = text.strip().splitlines()
+    assert len(lines) == 3
 
 
 def test_build_nodes_text_sanitizes_remark_and_dedupes_links():
