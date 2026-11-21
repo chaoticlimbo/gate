@@ -6,7 +6,7 @@
   2. 只保留带 TCP 入口的 SSTP 节点（VPN Gate 的 TCP 端口即 SSTP 端口）
   3. 去重 → 按 Ping 预排序 →（可选）截断
   4. 并发调用检测 Worker
-  5. 拉取仓库 domain.txt 优选域名池（失败回退静态池），合并优选 API 端点
+  5. 拉取 Gist 优选域名池（失败回退静态池），合并优选 API 端点
   6. 生成 public/data.json + public/index.html + public/nodes.txt
 
 配置全部来自环境变量。模板仓库约定：用户只需在仓库里配置 Secret `DOMAIN`，
@@ -53,23 +53,21 @@ DEFAULT_VPNGATE_MIRROR = (
 )
 DEFAULT_OPTIMAL_API = ""
 
-# 优选域名池来自本仓库的 domain.txt：改域名只需改那个文件，不用动脚本。
-# 每次运行时拉取最新内容，拉取失败时回退到下面的静态池（内容与 domain.txt 保持一致）。
+# 优选域名池存放在 GitHub Gist 里：改域名只需在 Gist 页面里改，不用动仓库和脚本。
+# 每次运行时拉取最新内容，拉取失败时回退到下面的静态池（内容与 Gist 保持一致）。
 # 可用 EDGE_HOSTS_URL 覆盖，设为空字符串禁用。
 DEFAULT_EDGE_HOSTS_URL = (
-    "https://raw.githubusercontent.com/chaoticlimbo/gate/main/domain.txt"
+    "https://gist.githubusercontent.com/chaoticlimbo/55bcc13885414287cbbbed2a97fc5756/raw/domain.txt"
 )
 
 # 占位符检测：命中任意一个就认为用户还没配置
 PLACEHOLDER_MARKERS = ("你的", "YOUR_", "YOUR-", "example.com", "yourdomain")
 
-# 静态优选域名池（domain.txt 拉取失败时的回退，内容与 domain.txt 一致；可用 EDGE_HOSTS 整体覆盖）
+# 静态优选域名池（Gist 拉取失败时的回退，内容与 Gist 一致；可用 EDGE_HOSTS 整体覆盖）
 DEFAULT_EDGE_HOSTS = [
-    "www.5199dy.com:2053",
     "tt.78607323.xyz:8443",
-    "224322.xyz:2083",
-    "saas.072159.xyz:2083",
-    "cf.vvhan.com:2053",
+    "clickhouse.com:2096",
+    "cdn.ctn32.us.kg:443",
 ]
 
 DATA_CENTER_ORG_KEYWORDS = [
