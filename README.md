@@ -24,7 +24,7 @@ GitHub Actions (手动或 cron)
         ├─ 解析 OpenVPN 配置 → 只保留 proto tcp → 得到 SSTP 候选
         ├─ 去重 + 按 Ping 预排序 +（可选）截断
         ├─ 并发请求 Cloudflare Worker: /check?sstp=vpn:vpn@host:port
-        ├─ 合并静态优选域名池（写死的 5 个域名）+ 优选 API 端点
+        ├─ 拉取仓库 domain.txt 优选域名池（失败回退静态池）+ 优选 API 端点
         └─ 生成 public/{data.json,index.html,nodes.txt}
                     │
                     └─ GitHub Pages → nodes.txt 作为 edgetunnel 的「自定义优选 IP」
@@ -74,8 +74,8 @@ on:
 | `MIN_SUCCESS_RATIO` | `0` | 成功率低于该比例时拒绝发布（0–1），`0` 表示不启用 |
 | `MAX_RESIDENTIAL_PER_COUNTRY` | `0` | 每个国家/地区写入 nodes.txt 的住宅节点上限，`0` 表示不限量（检测通过的全部发布） |
 | `MAX_DATACENTER_PER_COUNTRY` | `0` | 每个国家/地区写入 nodes.txt 的机房节点上限，`0` 表示不限量（检测通过的全部发布） |
-| `EDGE_HOSTS_URL` | 不启用 | 远程优选域名池地址（可选）；设置后每次运行时拉取该名单作入口池，拉取失败回退静态池。默认不调用任何远程名单 |
-| `EDGE_HOSTS` / `HOSTS_ENTRY` | 写死的 5 个域名 | 静态优选域名池：`www.5199dy.com:2053`、`tt.78607323.xyz:8443`、`224322.xyz:2083`、`saas.072159.xyz:2083`、`cf.vvhan.com:2053`；可用环境变量整体覆盖，逗号分隔 |
+| `EDGE_HOSTS_URL` | 本仓库 `domain.txt` 的 raw 链接 | 优选域名池文件地址。改域名只需编辑仓库里的 `domain.txt`（一行一个 `host:port`），下次运行自动生效，不用改脚本；拉取失败回退静态池 |
+| `EDGE_HOSTS` / `HOSTS_ENTRY` | 与 `domain.txt` 相同的 5 个域名 | 静态优选域名池（`domain.txt` 拉取失败时回退用）；可用环境变量整体覆盖，逗号分隔 |
 | `OPTIMAL_API` | `https://cf.090227.xyz/ct?ips=6&port=443` | 优选 API；返回每行一个 `IP:端口` 或 IPv6，支持逗号分隔多个 |
 | `PUBLIC_DIR` | `./public` | 产物目录 |
 | `VPNGATE_API` / `VPNGATE_MIRROR` | 官方 API / 内置镜像 | 数据源，一般不用改 |
