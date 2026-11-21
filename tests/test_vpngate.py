@@ -24,6 +24,7 @@ def make_config(**overrides):
         template_html="/tmp/index.html",
         edge_hosts=("a.example.com:443", "b.example.com:443"),
         edge_hosts_url="",
+        edge_ips_url="",
         optimal_api="",
         nodes_url="https://owner.github.io/repo/nodes.txt",
         min_success_ratio=0.0,
@@ -259,6 +260,64 @@ def test_get_combined_edge_hosts_prefers_remote_then_static():
     combined = vpngate.get_combined_edge_hosts(cfg, _FakeSession("remote.com:443#优选\n"))
     assert combined == ["remote.com:443"]
     combined = vpngate.get_combined_edge_hosts(cfg, _FakeSession(status_code=500))
+    assert combined == ["a.example.com:443", "b.example.com:443"]
+
+
+class _UrlFakeSession:
+    """按 URL 返回不同响应的假会话，未登记的 URL 返回 404。"""
+
+    def __init__(self, by_url):
+        self._by_url = by_url
+
+    def get(self, url, timeout=None):
+        text, status = self._by_url.get(url, ("", 404))
+        return _FakeResponse(text, status)
+
+
+def test_fetch_edge_ips_parses_top20_format():
+    cfg = make_config(edge_ips_url="https://example.invalid/best-cf-ip-scanned-top20.txt")
+    session = _FakeSession(
+        "# 20 best cf ips scanned at 2026-11-22 05:47\n"
+        "104.18.42.83:443#SG\n"
+        "172.64.145.19:443#SG\n"
+        "104.18.42.83:443#SG\n"
+    )
+    assert vpngate.fetch_edge_ips(cfg, session) == ["104.18.42.83:443", "172.64.145.19:443"]
+
+
+def test_get_combined_edge_hosts_uses_ip_pool_when_domain_pool_empty():
+    gist_url = "https://example.invalid/domain.txt"
+    ips_url = "https://example.invalid/best-cf-ip-scanned-top20.txt"
+    cfg = make_config(edge_hosts_url=gist_url, edge_ips_url=ips_url)
+    session = _UrlFakeSession(
+        {
+            gist_url: ("", 200),  # Gist 文件为空
+            ips_url: ("104.18.42.83:443#SG\n172.64.145.19:443#SG\n", 200),
+        }
+    )
+    combined = vpngate.get_combined_edge_hosts(cfg, session)
+    assert combined == ["104.18.42.83:443", "172.64.145.19:443"]
+
+
+def test_get_combined_edge_hosts_keeps_domains_when_gist_nonempty():
+    gist_url = "https://example.invalid/domain.txt"
+    ips_url = "https://example.invalid/best-cf-ip-scanned-top20.txt"
+    cfg = make_config(edge_hosts_url=gist_url, edge_ips_url=ips_url)
+    session = _UrlFakeSession(
+        {
+            gist_url: ("remote.com:443\n", 200),
+            ips_url: ("104.18.42.83:443#SG\n", 200),
+        }
+    )
+    assert vpngate.get_combined_edge_hosts(cfg, session) == ["remote.com:443"]
+
+
+def test_get_combined_edge_hosts_static_when_both_remote_sources_empty():
+    gist_url = "https://example.invalid/domain.txt"
+    ips_url = "https://example.invalid/best-cf-ip-scanned-top20.txt"
+    cfg = make_config(edge_hosts_url=gist_url, edge_ips_url=ips_url)
+    session = _UrlFakeSession({gist_url: ("", 200), ips_url: ("", 500)})
+    combined = vpngate.get_combined_edge_hosts(cfg, session)
     assert combined == ["a.example.com:443", "b.example.com:443"]
 
 
