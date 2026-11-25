@@ -69,6 +69,11 @@ jobs:
           CHECK_TIMEOUT: ${{ github.event.inputs.timeout || '25' }}
           MAX_CHECK_NODES: ${{ github.event.inputs.max_nodes || '0' }}
           MIN_SUCCESS_RATIO: '0'
+          MIN_SPEED_MBPS: '10'
+          MAX_SESSIONS: '30'
+          MIN_FILTER_SURVIVORS: '10'
+          PREFERRED_SESSIONS: '20'
+          MAX_RESIDENTIAL_PER_COUNTRY: '10'
         run: python vpngate.py
 
       - name: Ensure GitHub Pages is enabled
