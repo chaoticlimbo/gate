@@ -25,8 +25,8 @@ def make_csv() -> str:
         [
             "*",
             HEADER,
-            f"public-vpn-1,203.0.113.9,1000,12,1000000,Japan,JP,1,1,1,1,2weeks,op,,{tcp}",
-            f"public-vpn-2,203.0.113.10,900,80,1000000,Japan,JP,1,1,1,1,2weeks,op,,{udp}",
+            f"public-vpn-1,203.0.113.9,1000,12,100000000,Japan,JP,1,1,1,1,2weeks,op,,{tcp}",
+            f"public-vpn-2,203.0.113.10,900,80,100000000,Japan,JP,1,1,1,1,2weeks,op,,{udp}",
             "*",
         ]
     )
@@ -105,7 +105,17 @@ def prepare_env(monkeypatch, base: str, public_dir, **extra):
     monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
     for key, value in extra.items():
         monkeypatch.setenv(key, value)
-    for key in ("DOMAIN", "MAX_CHECK_NODES", "MIN_SUCCESS_RATIO"):
+    for key in (
+        "DOMAIN",
+        "MAX_CHECK_NODES",
+        "MIN_SUCCESS_RATIO",
+        "MIN_SPEED_MBPS",
+        "MAX_SESSIONS",
+        "MIN_FILTER_SURVIVORS",
+        "PREFERRED_SESSIONS",
+        "MAX_RESIDENTIAL_PER_COUNTRY",
+        "MAX_DATACENTER_PER_COUNTRY",
+    ):
         if key not in extra:
             monkeypatch.delenv(key, raising=False)
 

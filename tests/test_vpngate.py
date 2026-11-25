@@ -134,6 +134,9 @@ def test_parse_csv_reads_header_and_skips_star_rows():
     assert rows[0]["host"] == "public-vpn-153"
     assert rows[0]["country_short"] == "JP"
     assert rows[0]["ping"] == 45
+    assert rows[0]["speed_mbps"] == 1.0
+    assert rows[0]["sessions"] == 10
+    assert rows[0]["uptime_days"] == pytest.approx(100 / 86_400_000)
 
     nodes = vpngate.to_sstp_nodes(rows)
     assert len(nodes) == 1
@@ -319,6 +322,67 @@ def test_get_combined_edge_hosts_static_when_both_remote_sources_empty():
     session = _UrlFakeSession({gist_url: ("", 200), ips_url: ("", 500)})
     combined = vpngate.get_combined_edge_hosts(cfg, session)
     assert combined == ["a.example.com:443", "b.example.com:443"]
+
+
+# ---------------------------------------------------------------------------
+# 质量筛选 / 发布排序
+# ---------------------------------------------------------------------------
+def _node(host, **kw):
+    base = dict(port=443, ip="1.1.1.1", country="Japan", country_code="JP")
+    base.update(kw)
+    return Node(host, **base)
+
+
+def test_quality_filter_drops_slow_and_crowded():
+    cfg = make_config(min_speed_mbps=10.0, max_sessions=30, min_filter_survivors=1)
+    nodes = [
+        _node("ok.opengw.net", speed_mbps=100.0, sessions=5),
+        _node("slow.opengw.net", speed_mbps=5.0, sessions=0),
+        _node("busy.opengw.net", speed_mbps=500.0, sessions=80),
+    ]
+    kept, dropped, cap = vpngate.apply_quality_filter(nodes, cfg)
+    assert [n.host for n in kept] == ["ok.opengw.net"]
+    assert dropped == 2
+    assert cap == 30
+
+
+def test_quality_filter_missing_fields_pass():
+    cfg = make_config(min_speed_mbps=10.0, max_sessions=30, min_filter_survivors=1)
+    kept, dropped, _ = vpngate.apply_quality_filter([_node("unknown.opengw.net")], cfg)
+    assert len(kept) == 1 and dropped == 0
+
+
+def test_quality_filter_safety_valve_relaxes_sessions_cap():
+    cfg = make_config(min_speed_mbps=10.0, max_sessions=30, min_filter_survivors=10)
+    nodes = [_node(f"h{i}.opengw.net", speed_mbps=100.0, sessions=40) for i in range(8)]
+    nodes += [_node(f"s{i}.opengw.net", speed_mbps=100.0, sessions=10) for i in range(4)]
+    kept, dropped, cap = vpngate.apply_quality_filter(nodes, cfg)
+    # cap 30 只剩 4 个（< 10），放宽到 50 后 12 个全过
+    assert cap == 50
+    assert len(kept) == 12 and dropped == 0
+
+
+def test_quality_filter_safety_valve_fully_opens_as_last_resort():
+    cfg = make_config(min_speed_mbps=10.0, max_sessions=30, min_filter_survivors=10)
+    nodes = [_node(f"h{i}.opengw.net", speed_mbps=100.0, sessions=90) for i in range(6)]
+    kept, _, cap = vpngate.apply_quality_filter(nodes, cfg)
+    assert cap is None
+    assert len(kept) == 6
+
+
+def test_publish_sort_key_prefers_idle_then_latency():
+    cfg = make_config(preferred_sessions=20)
+    busy_fast = {"host": "a", "residential": "residential", "sessions": 60,
+                 "latency_ms": 10, "speed_mbps": 100.0, "uptime_days": 1.0}
+    idle_slow = {"host": "b", "residential": "residential", "sessions": 3,
+                 "latency_ms": 90, "speed_mbps": 100.0, "uptime_days": 1.0}
+    idle_fast = {"host": "c", "residential": "residential", "sessions": 3,
+                 "latency_ms": 40, "speed_mbps": 100.0, "uptime_days": 1.0}
+    ordered = sorted(
+        [busy_fast, idle_slow, idle_fast],
+        key=lambda n: vpngate.publish_sort_key(n, cfg.preferred_sessions),
+    )
+    assert [n["host"] for n in ordered] == ["c", "b", "a"]
 
 
 # ---------------------------------------------------------------------------
