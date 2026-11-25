@@ -294,6 +294,11 @@ class Config:
     min_success_ratio: float
     max_residential_per_country: int
     max_datacenter_per_country: int
+    # 质量筛选（默认值与 Config.load 的 env 默认保持一致）
+    min_speed_mbps: float = 10.0
+    max_sessions: int = 30
+    min_filter_survivors: int = 10
+    preferred_sessions: int = 20
 
     @classmethod
     def load(cls) -> "Config":
@@ -328,8 +333,12 @@ class Config:
             optimal_api=os.environ.get("OPTIMAL_API", DEFAULT_OPTIMAL_API),
             nodes_url=derive_nodes_url(),
             min_success_ratio=_env_float("MIN_SUCCESS_RATIO", 0.0, minimum=0.0),
-            max_residential_per_country=_env_int("MAX_RESIDENTIAL_PER_COUNTRY", 0),
+            max_residential_per_country=_env_int("MAX_RESIDENTIAL_PER_COUNTRY", 10),
             max_datacenter_per_country=_env_int("MAX_DATACENTER_PER_COUNTRY", 0),
+            min_speed_mbps=_env_float("MIN_SPEED_MBPS", 10.0, minimum=0.0),
+            max_sessions=_env_int("MAX_SESSIONS", 30),
+            min_filter_survivors=_env_int("MIN_FILTER_SURVIVORS", 10, minimum=1),
+            preferred_sessions=_env_int("PREFERRED_SESSIONS", 20),
         )
 
 
@@ -412,6 +421,9 @@ def parse_csv(text: str) -> list[dict[str, Any]]:
     idx_short = pick("countryshort", default=6)
     idx_ping = pick("ping")
     idx_score = pick("score")
+    idx_speed = pick("speed")
+    idx_sessions = pick("numvpnsessions")
+    idx_uptime = pick("uptime")
     idx_config = pick("openvpn_configdata_base64")
     if idx_config is None:
         idx_config = next(
@@ -444,6 +456,8 @@ def parse_csv(text: str) -> list[dict[str, Any]]:
             raw = cell(index)
             return int(raw) if raw.isdigit() else None
 
+        speed_bps = to_int(idx_speed)
+        uptime_ms = to_int(idx_uptime)
         rows.append(
             {
                 "host": host,
@@ -453,6 +467,10 @@ def parse_csv(text: str) -> list[dict[str, Any]]:
                 "config_b64": cell(idx_config),
                 "ping": to_int(idx_ping),
                 "score": to_int(idx_score),
+                # Speed 原始单位 bps、Uptime 原始单位毫秒，统一换算后保存
+                "speed_mbps": (speed_bps / 1_000_000) if speed_bps is not None else None,
+                "sessions": to_int(idx_sessions),
+                "uptime_days": (uptime_ms / 86_400_000) if uptime_ms is not None else None,
             }
         )
     return rows
@@ -482,6 +500,15 @@ def parse_mirror_json(data: Any) -> list[dict[str, Any]]:
             except (TypeError, ValueError):
                 return None
 
+        def as_int_any(*keys: str) -> int | None:
+            for key in keys:
+                value = as_int(key)
+                if value is not None:
+                    return value
+            return None
+
+        speed_bps = as_int_any("speed")
+        uptime_ms = as_int_any("uptime")
         rows.append(
             {
                 "host": host,
@@ -497,6 +524,10 @@ def parse_mirror_json(data: Any) -> list[dict[str, Any]]:
                 ).strip(),
                 "ping": as_int("ping"),
                 "score": as_int("score"),
+                # 镜像字段完整性未经验证：取不到就记 None，筛选层按缺失放行
+                "speed_mbps": (speed_bps / 1_000_000) if speed_bps is not None else None,
+                "sessions": as_int_any("numvpnsessions", "num_vpn_sessions", "sessions"),
+                "uptime_days": (uptime_ms / 86_400_000) if uptime_ms is not None else None,
             }
         )
     return rows
@@ -514,6 +545,9 @@ class Node:
     country_code: str
     ping: int | None = None
     score: int | None = None
+    speed_mbps: float | None = None
+    sessions: int | None = None
+    uptime_days: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -524,6 +558,9 @@ class Node:
             "country_code": self.country_code,
             "ping": self.ping,
             "score": self.score,
+            "speed_mbps": self.speed_mbps,
+            "sessions": self.sessions,
+            "uptime_days": self.uptime_days,
         }
 
 
@@ -562,6 +599,9 @@ def to_sstp_nodes(rows: Iterable[dict[str, Any]]) -> list[Node]:
                 country_code=(row.get("country_short") or "").strip().upper(),
                 ping=row.get("ping"),
                 score=row.get("score"),
+                speed_mbps=row.get("speed_mbps"),
+                sessions=row.get("sessions"),
+                uptime_days=row.get("uptime_days"),
             )
         )
     return nodes
@@ -584,6 +624,65 @@ def prioritize(nodes: list[Node]) -> list[Node]:
     return sorted(
         nodes,
         key=lambda n: (n.ping is None, n.ping or 0, -(n.score or 0), n.host),
+    )
+
+
+# ---------------------------------------------------------------------------
+# 质量筛选与发布排序
+# ---------------------------------------------------------------------------
+def apply_quality_filter(
+    nodes: list[Node], cfg: Config
+) -> tuple[list[Node], int, int | None]:
+    """检测前质量筛选：Speed 硬下限 + 当前会话数上限，字段缺失（None）一律放行。
+
+    返回 (保留节点, 剔除数量, 实际生效的会话上限)。会话上限带安全阀：依次尝试
+    [配置值, 50, 不限]，存活数达到 MIN_FILTER_SURVIVORS 即停，避免池子波动时
+    把一轮运行筛空。MAX_SESSIONS=0 表示不限；Speed 下限不放宽（只砍尾部）。
+    """
+
+    def speed_ok(node: Node) -> bool:
+        return (
+            cfg.min_speed_mbps <= 0
+            or node.speed_mbps is None
+            or node.speed_mbps >= cfg.min_speed_mbps
+        )
+
+    speed_passed = [n for n in nodes if speed_ok(n)]
+    if cfg.max_sessions <= 0:
+        return speed_passed, len(nodes) - len(speed_passed), None
+
+    ladder: list[int | None] = []
+    for cap in (cfg.max_sessions, 50, None):
+        if cap not in ladder:
+            ladder.append(cap)
+    chosen = speed_passed
+    effective: int | None = cfg.max_sessions
+    for cap in ladder:
+        if cap is None:
+            chosen = speed_passed
+        else:
+            chosen = [
+                n for n in speed_passed if n.sessions is None or n.sessions <= cap
+            ]
+        effective = cap
+        if len(chosen) >= cfg.min_filter_survivors or cap is None:
+            break
+    return chosen, len(nodes) - len(chosen), effective
+
+
+def publish_sort_key(node: dict[str, Any], preferred_sessions: int) -> tuple:
+    """发布排序：住宅优先 → 清闲档（会话 ≤ PREFERRED_SESSIONS）→ Worker 延迟
+    升序 → Speed 降序 → Uptime 降序。字段缺失时：会话不进清闲档、延迟置后、
+    Speed/Uptime 按 0 计。"""
+    sessions = node.get("sessions")
+    idle_tier = 0 if (sessions is not None and sessions <= preferred_sessions) else 1
+    return (
+        node.get("residential") != "residential",
+        idle_tier,
+        node.get("latency_ms") is None,
+        node.get("latency_ms") or 0,
+        -(node.get("speed_mbps") or 0),
+        -(node.get("uptime_days") or 0),
     )
 
 
@@ -836,6 +935,7 @@ def build_outputs(
     worker_host: str,
     duration_s: float,
     timed_out: int,
+    preferred_sessions: int = 20,
 ) -> dict[str, Any]:
     available = [r for r in results if r.get("success")]
     countries: dict[str, dict[str, Any]] = {}
@@ -854,9 +954,7 @@ def build_outputs(
         group["residential"] = sum(1 for n in group["nodes"] if n.get("residential") == "residential")
         group["datacenter"] = sum(1 for n in group["nodes"] if n.get("residential") == "datacenter")
         group["unknown"] = group["count"] - group["residential"] - group["datacenter"]
-        group["nodes"].sort(
-            key=lambda n: (n.get("residential") != "residential", n.get("latency_ms") is None, n.get("latency_ms") or 0)
-        )
+        group["nodes"].sort(key=lambda n: publish_sort_key(n, preferred_sessions))
 
     stats = {
         "raw_nodes": raw_count,
@@ -896,7 +994,7 @@ def build_nodes_text(data: dict[str, Any], edge_hosts: list[str], cfg: Config) -
         name = COUNTRY_ZH.get(code) or group.get("name") or code
         nodes = sorted(
             group["nodes"],
-            key=lambda n: (n.get("residential") != "residential", n.get("latency_ms") is None, n.get("latency_ms") or 0),
+            key=lambda n: publish_sort_key(n, cfg.preferred_sessions),
         )
         residential = [n for n in nodes if n.get("residential") == "residential"]
         others = [n for n in nodes if n.get("residential") != "residential"]
@@ -1014,10 +1112,22 @@ def main() -> None:
         die("VPN GATE", f"从 {raw_count} 个原始节点中没有解析出任何 SSTP(TCP) 节点")
 
     unique_nodes = prioritize(dedupe_nodes(sstp_nodes))
+    deduped_count = len(unique_nodes)
+    unique_nodes, filtered_out, effective_sessions_cap = apply_quality_filter(
+        unique_nodes, cfg
+    )
     if cfg.max_check_nodes > 0:
         unique_nodes = unique_nodes[: cfg.max_check_nodes]
 
-    log("VPN GATE", f"原始节点 {raw_count}, SSTP {sstp_count}, 去重后 {len(unique_nodes)}")
+    log("VPN GATE", f"原始节点 {raw_count}, SSTP {sstp_count}, 去重后 {deduped_count}")
+    cap_desc = "不限" if effective_sessions_cap is None else str(effective_sessions_cap)
+    relaxed = cfg.max_sessions > 0 and effective_sessions_cap != cfg.max_sessions
+    log(
+        "QUALITY FILTER",
+        f"质量筛选: {deduped_count} → {len(unique_nodes)}（剔除 {filtered_out}; "
+        f"Speed ≥ {cfg.min_speed_mbps:g} Mbps, 会话 ≤ {cap_desc}"
+        f"{', 安全阀已放宽' if relaxed else ''}）",
+    )
     log("CLOUDFLARE WORKER", f"提交检测: {len(unique_nodes)}")
 
     check_started = time.time()
@@ -1053,6 +1163,7 @@ def main() -> None:
         worker_host=worker_host,
         duration_s=time.time() - started,
         timed_out=timed_out,
+        preferred_sessions=cfg.preferred_sessions,
     )
 
     edge_hosts = get_combined_edge_hosts(cfg, session)
